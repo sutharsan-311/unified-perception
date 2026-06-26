@@ -282,11 +282,13 @@ class AdapterTrainer:
             # Train
             epoch_metrics = self.train_epoch(epoch)
             history["train_losses"].append(epoch_metrics["train_loss"])
+            self.train_losses.append(epoch_metrics["train_loss"])
 
             # Validate
             if self.val_loader:
                 val_loss = self.validate()
                 history["val_losses"].append(val_loss)
+                self.val_losses.append(val_loss)
                 print(f"Validation Loss: {val_loss:.6f}")
 
                 # Save checkpoint
@@ -294,7 +296,7 @@ class AdapterTrainer:
                     self.save_checkpoint(epoch=epoch)
 
         # Save final checkpoint
-        self.save_checkpoint(is_final=True)
+        self.save_checkpoint(epoch=num_epochs, is_final=True)
 
         # Training summary
         elapsed = time.time() - self.start_time
