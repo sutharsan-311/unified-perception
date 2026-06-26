@@ -48,15 +48,11 @@ class COCOAdapterDataset(Dataset):
         if num_images is not None:
             self.image_paths = self.image_paths[:num_images]
 
-        # Default transforms
+        # Default transforms — raw [0, 1] range; encoders apply their own normalization
         if transform is None:
             self.transform = transforms.Compose([
                 transforms.Resize((image_size, image_size)),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                ),
             ])
         else:
             self.transform = transform

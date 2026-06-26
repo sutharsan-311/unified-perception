@@ -64,6 +64,16 @@ def main():
     parser.add_argument("--load-checkpoint", default=None,
                         help="Path to checkpoint to load")
 
+    # Phase C arguments
+    parser.add_argument("--phase-c", action="store_true",
+                        help="Use real OWL + SAM encoders (Phase C)")
+    parser.add_argument("--sam-checkpoint", default=None,
+                        help="Path to SAM checkpoint (.pth)")
+    parser.add_argument("--sam-model-type", default="vit_b",
+                        help="SAM model type (vit_b, vit_l, vit_h)")
+    parser.add_argument("--owl-model", default="google/owlvit-base-patch32",
+                        help="OWL-ViT model name from HuggingFace")
+
     # Other arguments
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
@@ -149,6 +159,17 @@ def main():
     )
     print()
 
+    # Load encoders for Phase C
+    owl_encoder, sam_encoder = None, None
+    if args.phase_c:
+        if not args.sam_checkpoint:
+            print("✗ --sam-checkpoint is required for Phase C")
+            sys.exit(1)
+        from nanosam.encoders import OWLEncoder, SAMEncoder
+        owl_encoder = OWLEncoder(model_name=args.owl_model).to(args.device)
+        sam_encoder = SAMEncoder(checkpoint_path=args.sam_checkpoint, model_type=args.sam_model_type).to(args.device)
+        print(f"  Phase C: real OWL + SAM encoders loaded\n")
+
     # Create trainer
     print("Creating trainer...")
     trainer = AdapterTrainer(
@@ -156,6 +177,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
+        owl_encoder=owl_encoder,
+        sam_encoder=sam_encoder,
     )
     print()
 

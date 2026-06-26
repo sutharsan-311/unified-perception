@@ -79,6 +79,8 @@ class AdapterTrainer:
         train_loader: DataLoader,
         val_loader: Optional[DataLoader] = None,
         config=None,
+        owl_encoder=None,
+        sam_encoder=None,
     ):
         """
         Args:
@@ -92,6 +94,9 @@ class AdapterTrainer:
         self.val_loader = val_loader
         self.config = config
         self.device = torch.device(config.device if config else "cuda")
+        self.owl_encoder = owl_encoder
+        self.sam_encoder = sam_encoder
+        self.phase_c = owl_encoder is not None and sam_encoder is not None
 
         # Move adapter to device
         self.adapter = self.adapter.to(self.device)
@@ -158,23 +163,18 @@ class AdapterTrainer:
         total_loss = 0
         num_batches = 0
 
-        for batch_idx, (images, target_features) in enumerate(self.train_loader):
-            # Move to device
+        for batch_idx, (images, _) in enumerate(self.train_loader):
             images = images.to(self.device)
-            target_features = target_features.to(self.device)
 
-            # Forward pass
             self.optimizer.zero_grad()
 
-            # For now, generate synthetic OWL features from image
-            # Phase C: Replace with actual OWL encoder
-            owl_features = torch.randn(
-                images.shape[0], 576, 768,
-                device=self.device,
-                dtype=images.dtype
-            )
+            if self.phase_c:
+                owl_features = self.owl_encoder(images)
+                target_features = self.sam_encoder(images)
+            else:
+                owl_features = torch.randn(images.shape[0], 576, 768, device=self.device, dtype=images.dtype)
+                target_features = torch.randn(images.shape[0], 256, 64, 64, device=self.device, dtype=images.dtype)
 
-            # Adapter forward pass
             pred_features = self.adapter(owl_features)
 
             # Compute loss
@@ -241,18 +241,16 @@ class AdapterTrainer:
         num_batches = 0
 
         with torch.no_grad():
-            for images, target_features in self.val_loader:
+            for images, _ in self.val_loader:
                 images = images.to(self.device)
-                target_features = target_features.to(self.device)
 
-                # Generate synthetic OWL features
-                owl_features = torch.randn(
-                    images.shape[0], 576, 768,
-                    device=self.device,
-                    dtype=images.dtype
-                )
+                if self.phase_c:
+                    owl_features = self.owl_encoder(images)
+                    target_features = self.sam_encoder(images)
+                else:
+                    owl_features = torch.randn(images.shape[0], 576, 768, device=self.device, dtype=images.dtype)
+                    target_features = torch.randn(images.shape[0], 256, 64, 64, device=self.device, dtype=images.dtype)
 
-                # Forward pass
                 pred_features = self.adapter(owl_features)
                 loss = self.criterion(pred_features, target_features)
 
