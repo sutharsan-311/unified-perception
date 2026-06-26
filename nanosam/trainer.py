@@ -201,6 +201,17 @@ class AdapterTrainer:
             total_loss += loss.item()
             num_batches += 1
 
+            # Periodic checkpoint — survives a Colab kernel restart mid-epoch.
+            # Rolling file per epoch; resume later with --load-checkpoint.
+            if (
+                self.config and
+                self.config.save_interval and
+                batch_idx > 0 and
+                batch_idx % self.config.save_interval == 0
+            ):
+                self.save_checkpoint(epoch=epoch)
+                print(f"  → Periodic checkpoint at batch {batch_idx}")
+
             # Logging
             if self.config and batch_idx % self.config.log_interval == 0:
                 avg_loss = total_loss / num_batches
@@ -258,6 +269,8 @@ class AdapterTrainer:
                 num_batches += 1
 
         self.adapter.train()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
         return total_loss / max(num_batches, 1)
 
     def train(self) -> Dict:
@@ -289,7 +302,13 @@ class AdapterTrainer:
                 self.val_losses.append(val_loss)
                 print(f"Validation Loss: {val_loss:.6f}")
 
-                # Save checkpoint
+                # Track and save the best model by validation loss
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.save_checkpoint(is_best=True)
+                    print(f"  → Saved best checkpoint!")
+
+                # Periodic epoch snapshot
                 if epoch % 5 == 0:
                     self.save_checkpoint(epoch=epoch)
 

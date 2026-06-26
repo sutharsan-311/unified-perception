@@ -18,6 +18,7 @@ class OWLEncoder(nn.Module):
         self.vision_model = model.owlvit.vision_model
         for p in self.parameters():
             p.requires_grad = False
+        self.eval()
         self.register_buffer('mean', torch.tensor(self.CLIP_MEAN).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor(self.CLIP_STD).view(1, 3, 1, 1))
         print("  OWL encoder loaded and frozen.")
@@ -54,6 +55,7 @@ class SAMEncoder(nn.Module):
         self.image_encoder = sam.image_encoder
         for p in self.parameters():
             p.requires_grad = False
+        self.eval()
         self.register_buffer('mean', torch.tensor(self.SAM_MEAN).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor(self.SAM_STD).view(1, 3, 1, 1))
         print("  SAM encoder loaded and frozen.")
