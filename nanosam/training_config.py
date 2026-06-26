@@ -50,7 +50,7 @@ class TrainingConfig:
 
     # Checkpoint
     checkpoint_dir: Path = Path("checkpoints")
-    checkpoint_name: str = "adapter_phase_b"
+    checkpoint_name: str = "adapter_phase_c"
 
     # Device
     device: str = "cuda"

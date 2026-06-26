@@ -65,8 +65,9 @@ class COCOAdapterDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
-            image: (3, H, W) normalized tensor
-            target_features: (256, 64, 64) simulated SAM features
+            image: (3, H, W) tensor in [0, 1] range
+            placeholder: unused dummy — targets are produced inside the trainer
+                (synthetic for Phase B, real SAM encoder for Phase C)
         """
         image_path = self.image_paths[idx]
 
@@ -78,29 +79,7 @@ class COCOAdapterDataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        # Generate target features (simulated SAM encoder output)
-        # In Phase C, replace with actual SAM encoder inference
-        target_features = self._generate_target_features(image)
-
-        return image, target_features
-
-    def _generate_target_features(self, image: torch.Tensor) -> torch.Tensor:
-        """
-        Generate target features for training.
-
-        For now, use a simple deterministic mapping.
-        Phase C: Replace with actual SAM encoder.
-
-        Args:
-            image: (3, H, W) normalized tensor
-
-        Returns:
-            target_features: (256, 64, 64) features
-        """
-        # Deterministic feature generation based on image content
-        # In Phase C, this will be: sam_encoder(image)
-        batch_features = torch.randn(1, 256, 64, 64, dtype=torch.float32)
-        return batch_features.squeeze(0)
+        return image, torch.zeros(1)
 
 
 class TrainingDataLoader:

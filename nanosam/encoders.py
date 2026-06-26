@@ -16,7 +16,6 @@ class OWLEncoder(nn.Module):
         print(f"Loading OWL encoder: {model_name}")
         model = OwlViTForObjectDetection.from_pretrained(model_name)
         self.vision_model = model.owlvit.vision_model
-        self.layer_norm = model.layer_norm
         for p in self.parameters():
             p.requires_grad = False
         self.register_buffer('mean', torch.tensor(self.CLIP_MEAN).view(1, 3, 1, 1))
@@ -35,8 +34,9 @@ class OWLEncoder(nn.Module):
             images = F.interpolate(images, (self.IMAGE_SIZE, self.IMAGE_SIZE), mode='bilinear', align_corners=False)
         images = (images - self.mean) / self.std
         outputs = self.vision_model(pixel_values=images)
-        patch_features = outputs.last_hidden_state[:, 1:, :]  # drop CLS token
-        return self.layer_norm(patch_features)
+        # Apply the vision transformer's post layer-norm, then drop the CLS token
+        hidden = self.vision_model.post_layernorm(outputs.last_hidden_state)
+        return hidden[:, 1:, :]  # (B, 576, 768)
 
 
 class SAMEncoder(nn.Module):
