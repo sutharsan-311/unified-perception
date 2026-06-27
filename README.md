@@ -4,7 +4,29 @@ Real-time open-vocabulary object detection + instance segmentation on **NVIDIA J
 
 Combines **NanoOWL** (OWL-ViT-B detection) + **NanoSAM** (SAM segmentation) with a learned adapter layer to eliminate redundant image encoding.
 
-**Status:** Phase A Complete (Adapter Implementation) ✅ | Phase B Ready (Training Pipeline) 🚀
+**Status:** Phases A–D complete. The core hypothesis was tested end to end and **did not work** with this design. See the result below before relying on any of the optimistic claims further down this README (they predate the experiment).
+
+---
+
+## Update: Result Is Negative ❌
+
+The central idea here was to skip SAM's encoder by mapping OWL's encoder features into SAM's feature space with a small adapter. We trained that adapter (Phase C) and then tested it end to end through SAM's real mask decoder (Phase D). **It does not produce usable masks.**
+
+**Headline number:** mean IoU of the adapter's masks vs real SAM's masks was **0.04** across random COCO images (same point prompt, same SAM decoder, only the image embedding source differs).
+
+![Phase D: adapter vs SAM mask comparison](assets/phase_d_comparison.jpg)
+
+Left: input plus a center-point prompt. Middle: real SAM (clean, precise). Right: adapter (blocky patches that do not localize to the prompted object).
+
+**What we learned:**
+
+- **Low feature-matching loss is a misleading proxy.** Training converged to ~0.065 val loss (MSE + cosine against SAM's encoder), yet the masks are unusable. A low average feature error does not mean the decoder gets the spatial structure it needs.
+- **Resolution is part of it, but not the whole story.** OWL-ViT-B/32 gives a 24×24 grid; SAM uses 64×64. Bilinearly upsampling 24→64 cannot invent the missing detail, which shows up as blocky artifacts. But the masks are not merely blurry, they are in the wrong place, so the objective is the bigger problem than the resolution.
+- **The simple feature-distillation approach is a dead end.** A finer encoder (OWL-ViT-B/16) or a learned upsampler might help, but the likely real fix is task-loss training (backprop through the decoder against ground-truth masks), which is a much larger effort with uncertain payoff.
+
+This was discussed upstream: [NVIDIA-AI-IOT/nanosam#42](https://github.com/NVIDIA-AI-IOT/nanosam/issues/42).
+
+Reproduce with `phase_d_compare.py`. Everything below this section describes the original design and was written before this result.
 
 ---
 
