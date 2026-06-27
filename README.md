@@ -1,496 +1,115 @@
-# Unified Perception: OWL-SAM Adapter for Edge Devices
+# Unified Perception: can one vision encoder feed both OWL and SAM?
 
-Real-time open-vocabulary object detection + instance segmentation on **NVIDIA Jetson Orin NX** using a unified feature encoder.
+An experiment in running open-vocabulary detection (NanoOWL) and segmentation (NanoSAM)
+on an NVIDIA Jetson Orin NX without paying for two separate image encoders.
 
-Combines **NanoOWL** (OWL-ViT-B detection) + **NanoSAM** (SAM segmentation) with a learned adapter layer to eliminate redundant image encoding.
-
-**Status:** Phases A–D complete. The core hypothesis was tested end to end and **did not work** with this design. See the result below before relying on any of the optimistic claims further down this README (they predate the experiment).
-
----
-
-## Update: Result Is Negative ❌
-
-The central idea here was to skip SAM's encoder by mapping OWL's encoder features into SAM's feature space with a small adapter. We trained that adapter (Phase C) and then tested it end to end through SAM's real mask decoder (Phase D). **It does not produce usable masks.**
-
-**Headline number:** mean IoU of the adapter's masks vs real SAM's masks was **0.04** across random COCO images (same point prompt, same SAM decoder, only the image embedding source differs).
-
-![Phase D: adapter vs SAM mask comparison](assets/phase_d_comparison.jpg)
-
-Left: input plus a center-point prompt. Middle: real SAM (clean, precise). Right: adapter (blocky patches that do not localize to the prompted object).
-
-**What we learned:**
-
-- **Low feature-matching loss is a misleading proxy.** Training converged to ~0.065 val loss (MSE + cosine against SAM's encoder), yet the masks are unusable. A low average feature error does not mean the decoder gets the spatial structure it needs.
-- **Resolution is part of it, but not the whole story.** OWL-ViT-B/32 gives a 24×24 grid; SAM uses 64×64. Bilinearly upsampling 24→64 cannot invent the missing detail, which shows up as blocky artifacts. But the masks are not merely blurry, they are in the wrong place, so the objective is the bigger problem than the resolution.
-- **The simple feature-distillation approach is a dead end.** A finer encoder (OWL-ViT-B/16) or a learned upsampler might help, but the likely real fix is task-loss training (backprop through the decoder against ground-truth masks), which is a much larger effort with uncertain payoff.
-
-This was discussed upstream: [NVIDIA-AI-IOT/nanosam#42](https://github.com/NVIDIA-AI-IOT/nanosam/issues/42).
-
-Reproduce with `phase_d_compare.py`. Everything below this section describes the original design and was written before this result.
+**Result: it did not work with this approach.** A small adapter that maps OWL's
+encoder features into SAM's feature space trains cleanly but produces unusable
+masks. This repo documents the idea, the test that exposed the problem, and what
+I learned. The result was also raised upstream with NVIDIA:
+[NVIDIA-AI-IOT/nanosam#42](https://github.com/NVIDIA-AI-IOT/nanosam/issues/42).
 
 ---
 
-## What This Is
+## The idea
 
-A **production-ready adapter layer** that transforms OWL-ViT-B encoder features into SAM-compatible format, enabling:
+On an edge device, the most expensive part of a detect-and-segment pipeline is the
+vision encoder, and this pipeline runs two of them every frame: one inside OWL (for
+detection) and one inside SAM (for segmentation). They look at the same image.
 
-- ✅ Shared feature extraction (no redundant encoding)
-- ✅ Real-time performance (1.33ms latency on RTX 3050 Ti, ~50-100 FPS on Jetson Orin NX)
-- ✅ Hospital-grade medical robotics (tested on Jetson Orin NX 8GB constraints)
-- ✅ Zero-shot open-vocabulary detection + segmentation
-- ✅ Fully on-device (no cloud dependency)
-
-**Use Case:** Autonomous hospital robots that need to detect and segment medical equipment, people, and anatomical features in real-time without any training on those specific objects.
-
----
-
-## Architecture
+So the question was: can I run OWL's encoder once and feed its features into SAM's
+mask decoder through a small adapter, and skip SAM's encoder entirely? If it worked,
+it would roughly halve the per-frame encoding cost.
 
 ```
-OWL-ViT-B Encoder Output        SAM Mask Decoder Input
-(B, 576, 768)                   (B, 256, 64, 64)
-    ↓                               ↑
-    └─── OwlToSamAdapter ───────────┘
-         
-    1. Reshape: 576 tokens → 24×24 grid
-    2. Interpolate: 24×24 → 64×64 (bilinear)
-    3. MLP: 768 → 512 → 256 dimensions
-    4. LayerNorm: feature stability
+Normal pipeline (two encoders):
+  image ──> OWL encoder ──> OWL detection
+  image ──> SAM encoder ──> SAM decoder ──> masks
+
+Proposed (one encoder + adapter):
+  image ──> OWL encoder ──┬──> OWL detection
+                          └──> adapter ──> SAM decoder ──> masks
 ```
 
-**Specifications:**
-- **Parameters:** 525,568 (tiny)
-- **Memory:** 2.0 MB (FP32)
-- **Inference Overhead:** 0.05ms per frame (negligible)
-- **All Parameters Trainable:** Yes
+## What I built
 
----
+A small adapter network (`nanosam/adapter.py`, ~525K parameters) that converts OWL's
+output shape into the shape SAM's decoder expects:
 
-## Performance
+- OWL outputs `(576, 768)`: a 24x24 grid of patches, each a 768-dim vector.
+- SAM's decoder expects `(256, 64, 64)`: a 64x64 grid of 256-dim vectors.
 
-### Benchmarks (NVIDIA RTX 3050 Ti)
+The adapter reshapes the tokens to a 24x24 grid, upsamples it to 64x64, and maps
+768 dimensions down to 256 with a two-layer MLP. I trained it on COCO images to make
+its output match SAM's real encoder output, using a mix of mean-squared-error and
+cosine-similarity loss, with both encoders frozen.
 
-| Metric | Value |
-|--------|-------|
-| Latency (batch=1) | 1.33ms |
-| Throughput | 751 FPS |
-| Peak Memory | 42.5MB |
-| Parameter Count | 525,568 |
-| Training Time | 2-4 hours |
+Training converged nicely: validation loss settled around 0.065. By that number alone
+the adapter looked done.
 
-### Hospital Robot Constraints (Jetson Orin NX 8GB)
+## How I tested whether it actually works
 
-```
-✓ FPS Requirement: ≥10 FPS
-  └─ Achieved: 50-100 FPS (estimated)
-  └─ Margin: 5-10x overspec
+Matching the encoder's features is only a proxy. What matters is whether SAM's
+decoder produces a correct mask from the adapter's features. So I ran the real test:
+take an image, place a point on an object, and compare two masks from the *same* SAM
+decoder with the *same* prompt, changing only where the features come from.
 
-✓ Memory Budget: ≤8GB
-  └─ Model weights: 2.5GB (OWL + SAM + Adapter)
-  └─ Runtime: 42.5MB per frame
-  └─ Headroom: 5.5GB
-  └─ Margin: 100x safe
+- **Baseline:** image -> SAM's real encoder -> decoder -> mask
+- **Adapter:** image -> OWL encoder -> adapter -> decoder -> mask
 
-✓ Latency Budget: <100ms
-  └─ Full pipeline: ~35-50ms
-  └─ Adapter overhead: 0.05ms
-  └─ Margin: 2-3x safe
+I measured agreement with **IoU** (intersection over union): how much the two masks
+overlap. 1.0 means identical, 0 means no overlap at all.
 
-✓ Thermal: Safe
-  └─ Additional power: <1W
-  └─ Hospital-grade certification possible
-```
+Run it yourself: `python compare_masks.py`
 
----
+### The result
 
-## Quick Start
+**Mean IoU was 0.04** across random COCO images. The adapter's masks barely overlap
+with SAM's.
 
-### Installation
+![Adapter masks vs real SAM masks](assets/mask_comparison.jpg)
 
-```bash
-# Clone
-git clone https://github.com/sutharsan-311/unified-perception
-cd unified-perception
+Left: the input image with a center-point prompt. Middle: real SAM, clean and precise.
+Right: the adapter, blocky patches that do not even land on the prompted object.
 
-# Install dependencies
-pip install torch torchvision transformers
-```
+## Why it did not work
 
-### Basic Usage
+- **A low training loss was misleading.** The adapter learned to match SAM's features
+  *on average*, but the decoder needs the right spatial structure, and average feature
+  error does not capture that. The loss looked great while the output was unusable.
+- **Resolution is part of it.** OWL's 24x24 grid is much coarser than SAM's 64x64.
+  Upsampling 24 to 64 cannot invent detail that was never captured, which is where the
+  blocky artifacts come from.
+- **But resolution is not the whole story.** The masks are not just blurry, they are in
+  the wrong place. That points to the training objective being the bigger problem, not
+  just the grid size.
 
-```python
-import torch
-from nanosam.adapter import OwlToSamAdapter
+## What I would try next
 
-# Create adapter
-adapter = OwlToSamAdapter()
+- **Train against masks, not features.** Instead of matching SAM's encoder output,
+  backpropagate through SAM's decoder against ground-truth masks, so the adapter is
+  rewarded for producing correct masks rather than similar-looking features. This is
+  the approach most likely to work, and also the largest effort.
+- **A finer OWL backbone** (OWL-ViT-B/16 gives a 48x48 grid) would reduce the
+  resolution gap, though on its own it would not fix the localization problem.
 
-# Transform OWL features to SAM format
-owl_features = torch.randn(1, 576, 768)  # From OWL-ViT-B encoder
-sam_features = adapter(owl_features)     # To SAM mask decoder
-
-print(sam_features.shape)  # (1, 256, 64, 64) ✓
-```
-
-### Full Pipeline (Proposed)
-
-```python
-from nanoowl.owl_predictor import OwlPredictor
-from nanosam.utils.predictor import Predictor
-from nanosam.adapter import OwlToSamAdapter
-
-# Initialize models
-owl = OwlPredictor("google/owlvit-base-patch32")
-sam = Predictor("data/mobile_sam_image_encoder.engine",
-                "data/mobile_sam_mask_decoder.engine")
-adapter = OwlToSamAdapter()
-
-# Detect + Segment
-image = PIL.Image.open("hospital_image.jpg")
-
-# OWL detection
-owl_output = owl.encode_image_torch(image)
-owl_features = owl_output.image_embeds
-
-# Transform + SAM segmentation
-sam_features = adapter(owl_features)
-masks = sam.mask_decoder(sam_features, points, labels)
-```
-
----
-
-## Testing
-
-### Quick Validation (5 seconds)
-
-```bash
-python3 test_adapter_quick.py
-```
-
-Checks:
-- ✅ Shape transformations
-- ✅ Feature quality (no NaN/Inf)
-- ✅ Gradient flow
-- ✅ GPU compatibility
-- ✅ Throughput estimation
-
-### Comprehensive Tests (30 seconds)
-
-```bash
-pytest tests/test_adapter.py -v
-```
-
-Coverage:
-- 26 unit tests
-- Batch sizes 1-16
-- FP16 precision
-- Memory efficiency
-- Edge cases
-
-### Full Benchmarks (2 minutes)
-
-```bash
-python3 benchmark_adapter.py --device cuda --batch-sizes 1 4 8
-```
-
-Outputs:
-- Latency per batch size
-- Peak memory usage
-- FLOPs estimation
-- Hardware compatibility
-
----
-
-## Files
+## Repository
 
 ```
-nanosam/
-  └── adapter.py              Core adapter module (230 lines)
-
-tests/
-  └── test_adapter.py         Comprehensive test suite (240 lines)
-
-test_adapter_quick.py         Quick validation script (234 lines)
-benchmark_adapter.py          Full benchmarking suite (280 lines)
-
-RESEARCH_UNIFIED_ENCODER.md   Detailed technical analysis
-ADAPTER_DESIGN_SUMMARY.md     Quick reference guide
-PHASE_A_COMPLETE.md           Completion report
-
-README.md                      This file
-.gitignore                     Standard Python ignores
+nanosam/adapter.py      the adapter network
+nanosam/encoders.py     frozen OWL and SAM encoders (feature extraction)
+nanosam/trainer.py      training loop
+train.py                training entry point
+compare_masks.py        the end-to-end IoU test that produced the result above
+tests/test_adapter.py   unit tests for the adapter shapes and gradients
+ARCHITECTURE.md         detailed feature-dimension analysis and design notes
+assets/                 the mask comparison figure
 ```
 
----
-
-## Phase Roadmap
-
-### ✅ Phase A: Adapter Implementation (COMPLETE)
-
-- Research: Feature dimension analysis
-- Design: MLP architecture
-- Build: Core adapter module
-- Test: 26 unit tests, all passing
-- Benchmark: Latency, memory, FLOPs measured
-
-**Deliverables:**
-- Standalone adapter module
-- Production-ready code
-- Complete test suite
-- Full benchmarks
-
-**Next:** Phase B
-
-### ⏭️ Phase B: Training on Medical Data (READY)
-
-- [ ] Prepare training dataset (hospital rosbags OR COCO)
-- [ ] Implement training loop
-- [ ] Supervised regression: OWL features → SAM features
-- [ ] Validate on medical images
-- [ ] Export checkpoint
-
-**Timeline:** ~1 day  
-**Requirements:** RTX 3060 (12GB VRAM)
-
-### 📋 Phase C: Integration (PLANNED)
-
-- [ ] Integrate into medical robot pipeline
-- [ ] Test on real Jetson Orin NX hardware
-- [ ] Async execution optimization
-- [ ] TensorRT export (optional)
-
-### 📋 Phase D: Validation (PLANNED)
-
-- [ ] Hospital environment testing
-- [ ] Real medical images
-- [ ] Accuracy metrics vs sequential baseline
-- [ ] Thermal profiling
-
-### 📋 Phase E: Deployment (PLANNED)
-
-- [ ] Production docker container
-- [ ] Deployment guide
-- [ ] Field trial documentation
-
----
-
-## How the Adapter Works
-
-### Problem
-OWL-ViT-B and SAM have different encoders:
-- **OWL output:** (B, 576, 768) — 576 tokens, 768-dim features
-- **SAM expects:** (B, 256, 64, 64) — 64×64 grid, 256-dim features
-
-Sequential pipeline encodes image twice (redundant).
-
-### Solution
-Single adapter layer:
-1. **Reshape** 576 tokens → 24×24 spatial grid
-2. **Interpolate** 24×24 → 64×64 bilinear
-3. **MLP** 768 → 512 → 256 dimensions
-4. **Normalize** for stability
-
-**Result:** Single forward pass produces SAM-compatible features.
-
-### Performance
-- **No speed improvement in sequential execution** (both encoders still run)
-- **Enables parallel execution** in future (50 FPS possible with async)
-- **Validates feature compatibility** (training data decides real accuracy)
-
----
-
-## Key Findings
-
-### ✓ Viability
-- Adapter is architecturally sound
-- No blockers to deployment
-- Performance exceeds all requirements
-
-### ✓ Correctness
-- 525K parameters as designed
-- Shape transformations verified
-- Gradient flow tested and working
-
-### ✓ Hospital-Ready
-- Memory: 5.5GB headroom on 8GB Jetson
-- Latency: 35-50ms per frame (< 100ms requirement)
-- Thermal: Safe for medical environment
-- Accuracy: TBD (Phase B training will determine)
-
----
-
-## Research & Design Documents
-
-### `RESEARCH_UNIFIED_ENCODER.md`
-Deep technical analysis:
-- Exact feature dimensions from both models
-- Dimension mismatch analysis
-- Adapter architecture with code
-- Training strategy options
-- Hardware constraints validation
-
-**Read this if:** You want to understand the math and design rationale.
-
-### `ADAPTER_DESIGN_SUMMARY.md`
-Quick reference:
-- Visual flowcharts
-- Parameter breakdown
-- Implementation checklist
-- Risk assessment
-- Training strategy comparison
-
-**Read this if:** You want a quick overview or implementation details.
-
-### `PHASE_A_COMPLETE.md`
-Completion report:
-- What was built
-- Test results
-- Benchmark numbers
-- Files created
-- Next steps
-
-**Read this if:** You want the summary of Phase A work.
-
----
-
-## Contributing & Development
-
-### Setup Development Environment
-
-```bash
-# Clone and install
-git clone https://github.com/sutharsan-311/unified-perception
-cd unified-perception
-pip install torch torchvision transformers pytest
-
-# Run tests
-pytest tests/test_adapter.py -v
-python3 test_adapter_quick.py
-python3 benchmark_adapter.py
-```
-
-### Code Style
-
-- Follow PEP 8
-- Type hints for all functions
-- Comprehensive docstrings
-- No external dependencies beyond PyTorch
-
-### Testing Requirements
-
-All changes must:
-- [ ] Pass existing tests
-- [ ] Include new tests for new features
-- [ ] Maintain or improve latency
-- [ ] Maintain or reduce memory usage
-
----
-
-## Hardware Requirements
-
-### Minimum (Development)
-- GPU: NVIDIA RTX 3060 (12GB VRAM)
-- CPU: Any modern processor
-- RAM: 16GB
-- Storage: 10GB
-
-### Target (Deployment)
-- GPU: NVIDIA Jetson Orin NX (8GB VRAM)
-- Inference: 50-100 FPS
-- Latency: <50ms per frame
-- Power: <15W sustained
-
-### Tested
-- RTX 3050 Ti (Laptop GPU): 751 FPS ✓
-
----
-
-## Limitations & Known Issues
-
-### Current
-- **FP16 precision not yet supported** (dtype mismatch in MLP)
-  - Workaround: Use FP32
-  - Impact: Uses 2x memory vs FP16
-  - Fix: Simple, planned for Phase B
-
-### Future Work
-- Async pipeline for true parallel execution (Phase C)
-- TensorRT export for Jetson deployment (Phase C)
-- Distillation for lighter models (Phase D)
-- Multi-head variants for different tasks (Phase D+)
-
----
-
-## Citation
-
-If you use this work, please cite:
-
-```bibtex
-@software{unified_perception_2026,
-  author = {Sutharsan},
-  title = {Unified Perception: OWL-SAM Adapter for Edge Devices},
-  year = {2026},
-  url = {https://github.com/sutharsan-311/unified-perception}
-}
-```
-
-Also cite the original papers:
-- [OWL-ViT](https://arxiv.org/abs/2205.06230)
-- [Segment Anything](https://arxiv.org/abs/2304.02643)
-- [MobileSAM](https://github.com/ChaoningZhang/MobileSAM)
-
----
-
-## License
-
-Apache License 2.0 (matching NVIDIA's original NanoOWL/NanoSAM)
-
----
-
-## Contact & Support
-
-**Questions about the adapter?**
-- Check `RESEARCH_UNIFIED_ENCODER.md` for detailed analysis
-- Check `ADAPTER_DESIGN_SUMMARY.md` for quick reference
-- Review tests in `tests/test_adapter.py`
-
-**Want to contribute?**
-- Fork this repo
-- Create a feature branch
-- Submit a PR with tests
-
-**Found a bug?**
-- Open an issue
-- Include reproduction steps
-- Attach benchmark results if performance-related
-
----
-
-## Acknowledgments
-
-Built on top of:
-- **NanoOWL** - NVIDIA's optimized OWL-ViT implementation
-- **NanoSAM** - NVIDIA's optimized SAM implementation
-- **OWL-ViT** - Google AI's open-vocabulary detection
-- **Segment Anything** - Meta's universal segmentation
-
----
-
-## Status
-
-| Phase | Status | Completion |
-|-------|--------|-----------|
-| A: Adapter | ✅ Complete | 100% |
-| B: Training | ⏳ Ready | Pending data |
-| C: Integration | 📋 Planned | Q3 2026 |
-| D: Validation | 📋 Planned | Q3 2026 |
-| E: Deployment | 📋 Planned | Q4 2026 |
-
-**Current:** Ready for Phase B training  
-**Target:** Hospital robot deployment Q4 2026
-
----
-
-*Built for medical robotics on edge hardware. Real-time, on-device, zero-shot perception.*
-
-🏥 🤖 🔥
+## Credits
+
+Built on top of NVIDIA's [NanoOWL](https://github.com/NVIDIA-AI-IOT/nanoowl) and
+[NanoSAM](https://github.com/NVIDIA-AI-IOT/nanosam), which wrap Google's
+[OWL-ViT](https://arxiv.org/abs/2205.06230) and Meta's
+[Segment Anything](https://arxiv.org/abs/2304.02643). Licensed Apache 2.0, matching
+the upstream projects.

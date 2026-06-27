@@ -214,11 +214,11 @@ def main():
         print("\n" + "="*70)
         print("✓ ALL VALIDATION TESTS PASSED")
         print("="*70)
-        print("\nAdapter is ready for Phase B training!")
+        print("\nAdapter shapes and gradients look good.")
         print("Next steps:")
         print("  1. Run full benchmark: python benchmark_adapter.py")
-        print("  2. Prepare training data")
-        print("  3. Implement training loop")
+        print("  2. Train: python train.py --real-encoders --sam-checkpoint sam_vit_b.pth")
+        print("  3. Evaluate: python compare_masks.py")
         print("="*70 + "\n")
 
         return 0

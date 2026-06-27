@@ -66,8 +66,8 @@ class COCOAdapterDataset(Dataset):
         """
         Returns:
             image: (3, H, W) tensor in [0, 1] range
-            placeholder: unused dummy — targets are produced inside the trainer
-                (synthetic for Phase B, real SAM encoder for Phase C)
+            placeholder: unused dummy. Targets are produced inside the trainer
+                (synthetic features for a smoke test, real SAM encoder otherwise)
         """
         image_path = self.image_paths[idx]
 

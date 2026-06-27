@@ -96,7 +96,7 @@ class AdapterTrainer:
         self.device = torch.device(config.device if config else "cuda")
         self.owl_encoder = owl_encoder
         self.sam_encoder = sam_encoder
-        self.phase_c = owl_encoder is not None and sam_encoder is not None
+        self.use_real_encoders = owl_encoder is not None and sam_encoder is not None
 
         # Move adapter to device
         self.adapter = self.adapter.to(self.device)
@@ -168,7 +168,7 @@ class AdapterTrainer:
 
             self.optimizer.zero_grad()
 
-            if self.phase_c:
+            if self.use_real_encoders:
                 owl_features = self.owl_encoder(images)
                 target_features = self.sam_encoder(images)
             else:
@@ -255,7 +255,7 @@ class AdapterTrainer:
             for images, _ in self.val_loader:
                 images = images.to(self.device)
 
-                if self.phase_c:
+                if self.use_real_encoders:
                     owl_features = self.owl_encoder(images)
                     target_features = self.sam_encoder(images)
                 else:

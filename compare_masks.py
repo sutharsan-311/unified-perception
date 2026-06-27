@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Phase D: End-to-end mask comparison.
+End-to-end mask comparison.
 
 Renders SAM's real segmentation against the adapter's segmentation using the
-*same* SAM mask decoder and the *same* point prompt — the only difference is
+*same* SAM mask decoder and the *same* point prompt. The only difference is
 where the image embedding comes from:
 
     SAM path:     image -> SAM encoder      -> decoder -> mask   (baseline)
@@ -16,12 +16,12 @@ feature-matching loss cannot. Reports per-image IoU (adapter vs SAM) and saves a
 side-by-side figure.
 
 Usage:
-    python phase_d_compare.py \
+    python compare_masks.py \
         --sam-checkpoint sam_vit_b.pth \
-        --adapter-checkpoint checkpoints/adapter_phase_c_best.pth \
+        --adapter-checkpoint checkpoints/adapter_best.pth \
         --coco-dir data/coco/val2017 \
         --num-samples 5 \
-        --output phase_d_comparison.png
+        --output mask_comparison.png
 """
 
 import argparse
@@ -81,7 +81,7 @@ def overlay(ax, image, mask=None, point=None, title=""):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase D mask comparison")
+    parser = argparse.ArgumentParser(description="Adapter vs SAM mask comparison")
     parser.add_argument("--sam-checkpoint", required=True)
     parser.add_argument("--adapter-checkpoint", required=True)
     parser.add_argument("--sam-model-type", default="vit_b")
@@ -93,7 +93,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--output", default="phase_d_comparison.png")
+    parser.add_argument("--output", default="mask_comparison.png")
     args = parser.parse_args()
 
     import matplotlib
@@ -162,7 +162,7 @@ def main():
                 title=f"Adapter (ours)\nIoU = {iou:.3f}")
 
     mean_iou = float(np.mean(ious))
-    fig.suptitle(f"Phase D — Adapter vs SAM   |   mean IoU = {mean_iou:.3f}", fontsize=14)
+    fig.suptitle(f"Adapter vs SAM   |   mean IoU = {mean_iou:.3f}", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
     fig.savefig(args.output, dpi=120, bbox_inches="tight")
     print(f"\nMean IoU (adapter vs SAM): {mean_iou:.3f}")

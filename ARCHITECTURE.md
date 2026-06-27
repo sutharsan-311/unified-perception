@@ -1,6 +1,6 @@
-# Research: Unified OWL-ViT + SAM Encoder Architecture
+# Unified OWL-ViT + SAM Encoder: Architecture Notes
 
-## Phase C: Feature Dimension Analysis
+## Feature Dimension Analysis
 
 ### 1. OWL-ViT-B Encoder Output
 
